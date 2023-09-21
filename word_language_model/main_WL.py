@@ -1,4 +1,8 @@
 # coding: utf-8
+
+import numpy as np
+from functools import partial
+
 import argparse
 import time
 import math
@@ -69,6 +73,13 @@ parser.add_argument(
 )
 parser.add_argument(
     "--dry-run", action="store_true", help="verify the code and the model"
+)
+
+parser.add_argument(
+    "--time_bias",
+    type=float,
+    default=0,
+    help="0, average weight, inf, terminal value, p=2, polynomial weighted",
 )
 args = parser.parse_args()
 
@@ -145,8 +156,12 @@ else:
         args.tied,
     ).to(device)
 
-criterion = nn.NLLLoss()
+if args.time_bias == 0:
+    criterion = nn.NLLLoss()
+elif -1.5 < args.time_bias < 2.5:
+    criterion = partial(time_weighted_power_loss, loss=nn.NLLLoss(), p=args.time_bias)
 
+criterion_test = nn.NLLLoss()
 ###############################################################################
 # Training code
 ###############################################################################
@@ -176,6 +191,8 @@ def get_batch(source, i):
     seq_len = min(args.bptt, len(source) - 1 - i)
     data = source[i : i + seq_len]
     target = source[i + 1 : i + 1 + seq_len].view(-1)
+
+    # print(data.shape, target.shape)
     return data, target
 
 
@@ -195,7 +212,25 @@ def evaluate(data_source):
             else:
                 output, hidden = model(data, hidden)
                 hidden = repackage_hidden(hidden)
-            total_loss += len(data) * criterion(output, targets).item()
+
+            # print("output", output.shape, "targets", targets.shape)
+            # output = output.reshape(data.shape[0], -1)
+            # targets = targets.reshape(data.shape[0], -1)
+            # print("output", output.shape, "targets", targets.shape)
+            """
+            output = output.reshape(data.shape[0],int(output.shape[0]/data.shape[0]),output.shape[1])
+            out_ = output.clone()
+            out_ = out_.reshape(out_.shape[0],out_.shape[2],out_.shape[1])
+
+            for i in range(output.shape[0]):
+                out_[i] = output[i].mT
+
+            output = out_
+
+            #output = output.reshape(data.shape[0], -1)
+            targets = targets.reshape(data.shape[0], -1)
+            """
+            total_loss += len(data) * criterion_test(output, targets).item()
     return total_loss / (len(data_source) - 1)
 
 
@@ -209,8 +244,8 @@ def train():
         hidden = model.init_hidden(args.batch_size)
     for batch, i in enumerate(range(0, train_data.size(0) - 1, args.bptt)):
         data, targets = get_batch(train_data, i)
-# print("data", data.shape)
-# print("targets", targets.shape)
+        # print("data", data.shape)
+        # print("targets", targets.shape)
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
         model.zero_grad()
@@ -220,7 +255,27 @@ def train():
         else:
             hidden = repackage_hidden(hidden)
             output, hidden = model(data, hidden)
+
+        # print("output", output.shape, "targets", targets.shape)
+        # 35 args.bptt
+        # print(output.shape[0],data.shape[0],data.shape[1])
+        output = output.reshape(
+            data.shape[0], int(output.shape[0] / data.shape[0]), output.shape[1]
+        )
+        out_ = output.clone()
+        out_ = out_.reshape(out_.shape[0], out_.shape[2], out_.shape[1])
+
+        for i in range(output.shape[0]):
+            out_[i] = output[i].mT
+
+        output = out_
+
+        # output = output.reshape(data.shape[0], -1)
+        targets = targets.reshape(data.shape[0], -1)
+        # print("output", output.shape, "targets", targets.shape)
+
         loss = criterion(output, targets)
+
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
